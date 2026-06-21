@@ -8,7 +8,11 @@ in
   parsec.sig
   parsecfn.sml
   charstream.sml
+  charparseccore.sml
   charparsec.sig
   charparsec.sml
+  expr.sig
+  exprfn.sml
+  charexpr.sml
   tokenstream.sml
 end

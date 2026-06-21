@@ -27,7 +27,7 @@ test: $(BIN)/test-mlton
 # exits on its own, so we just `use` the sources in order. No executable is
 # exported, which sidesteps any linker quirks.
 poly test-poly:
-	printf 'use "$(LIBDIR)/stream.sig";\nuse "$(LIBDIR)/parsec.sig";\nuse "$(LIBDIR)/parsecfn.sml";\nuse "$(LIBDIR)/charstream.sml";\nuse "$(LIBDIR)/charparsec.sig";\nuse "$(LIBDIR)/charparsec.sml";\nuse "$(LIBDIR)/tokenstream.sml";\nuse "test/test.sml";\n' | $(POLY) -q --error-exit
+	printf 'use "$(LIBDIR)/stream.sig";\nuse "$(LIBDIR)/parsec.sig";\nuse "$(LIBDIR)/parsecfn.sml";\nuse "$(LIBDIR)/charstream.sml";\nuse "$(LIBDIR)/charparseccore.sml";\nuse "$(LIBDIR)/charparsec.sig";\nuse "$(LIBDIR)/charparsec.sml";\nuse "$(LIBDIR)/expr.sig";\nuse "$(LIBDIR)/exprfn.sml";\nuse "$(LIBDIR)/charexpr.sml";\nuse "$(LIBDIR)/tokenstream.sml";\nuse "test/test.sml";\n' | $(POLY) -q --error-exit
 
 all-tests: test test-poly
 

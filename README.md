@@ -13,7 +13,11 @@ primitives, and the library tracks source positions and accumulates an
 As of **v0.3.0** the core is a functor `ParsecFn (S : STREAM)` over an abstract
 input `STREAM`, so the same combinators parse character streams, token streams
 produced by a separate lexer, or anything else you can express as `uncons`. For
-the common case of parsing strings, use the ready-made `CharParsec` structure.
+the common case of parsing strings, use the ready-made `CharParsec` structure,
+which also bundles a [lexer/token kit](#lexer--token-kit) and an
+[expression-parser builder](#expression-parser-builder). Every operator has a
+[prefix-named alias](#zero-fixity-ergonomics) so grammars can be written with no
+`infix` declarations at all.
 
 > **Breaking change in v0.3.0.** The old `structure Parsec` (string-only) is
 > gone. For string parsing, `open CharParsec` instead of `open Parsec` -- the
@@ -75,7 +79,31 @@ infix 1 <*
 infix 4 <*> <$>
 infixr 1 <|>
 infix 0 <?>
-open Parsec
+open CharParsec
+```
+
+### Zero-fixity ergonomics
+
+If you would rather not declare any fixities, every operator has a curried,
+prefix-named alias, so a whole grammar can be written without an `infix` block:
+
+| operator | alias | type |
+| --- | --- | --- |
+| `>>=` | `andThen`  | `'a parser -> ('a -> 'b parser) -> 'b parser` |
+| `>>`  | `seqRight` | `'a parser -> 'b parser -> 'b parser` |
+| `<*`  | `seqLeft`  | `'a parser -> 'b parser -> 'a parser` |
+| `<*>` | `ap`       | `('a -> 'b) parser -> 'a parser -> 'b parser` |
+| `<$>` | `map`      | `('a -> 'b) -> 'a parser -> 'b parser` |
+| `<|>` | `orElse`   | `'a parser -> 'a parser -> 'a parser` |
+| `<?>` | `label`    | `'a parser -> string -> 'a parser` |
+
+```sml
+open CharParsec   (* no infix declarations needed *)
+
+(* a signed integer, then end of input *)
+val signedInt = orElse (seqRight (char #"~") (map (fn n => ~n) integer)) integer
+val full      = seqLeft (seqRight spaces signedInt) eof
+val Ok n      = runParser full "~42"   (* n = ~42 *)
 ```
 
 ## Portability
@@ -124,8 +152,12 @@ use "lib/github.com/sjqtentacles/sml-parsec/stream.sig";
 use "lib/github.com/sjqtentacles/sml-parsec/parsec.sig";
 use "lib/github.com/sjqtentacles/sml-parsec/parsecfn.sml";
 use "lib/github.com/sjqtentacles/sml-parsec/charstream.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/charparseccore.sml";
 use "lib/github.com/sjqtentacles/sml-parsec/charparsec.sig";
 use "lib/github.com/sjqtentacles/sml-parsec/charparsec.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/expr.sig";
+use "lib/github.com/sjqtentacles/sml-parsec/exprfn.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/charexpr.sml";
 use "lib/github.com/sjqtentacles/sml-parsec/tokenstream.sml";  (* optional *)
 ```
 
@@ -170,6 +202,62 @@ case runParser (calc ()) "1 + * 2" of
 (* parse error at line 1, column 5: ... *)
 ```
 
+## Lexer / token kit
+
+`CharParsec` ships a small lexer kit so you do not have to hand-roll the usual
+whitespace and punctuation plumbing. A *lexeme* is a parser that skips trailing
+whitespace; `lexeme` is the canonical name (the old `token` is kept as an
+alias).
+
+```sml
+open CharParsec
+
+val ident = identifier Char.isAlpha Char.isAlphaNum   (* first/rest predicates *)
+
+(* parse `let x = (1, 2, 3)` shapes *)
+val binding =
+  keyword "let" >> ident >>= (fn name =>
+    symbol "=" >> parens (commaSep (lexeme integer)) >>= (fn nums =>
+      return (name, nums)))
+
+val Ok ("x", [1,2,3]) = parse binding "let x = (1, 2, 3)"
+```
+
+Kit members: `lexeme` (= `token`), `symbol`, `parens` / `brackets` / `braces`,
+`identifier`, `keyword` (rejects e.g. `lettuce` for keyword `let`),
+`commaSep` / `commaSep1`, `semiSep` / `semiSep1`. The `parse` driver skips
+leading whitespace, runs the parser, and requires end of input -- unlike
+`runParser`, which permits trailing input.
+
+## Expression parser builder
+
+`buildExpressionParser` turns a precedence table into a parser, so you do not
+have to write the `chainl1` / `chainr1` ladder by hand. It is a functor
+`ExprParserFn (P : PARSEC)`; the character instance is `CharExpr`, whose parsers
+unify with `CharParsec`'s.
+
+```sml
+open CharParsec
+open CharExpr   (* assoc, the `operator` constructors, buildExpressionParser *)
+
+(* table is HIGHEST precedence first *)
+fun mulop () = lexeme (char #"*") >> return (op * )
+fun addop () = lexeme (char #"+") >> return (op +)
+fun subop () = lexeme (char #"-") >> return (op -)
+fun table () =
+  [ [ Infix (mulop (), LeftAssoc) ],
+    [ Infix (addop (), LeftAssoc), Infix (subop (), LeftAssoc) ] ]
+fun factor () = lexeme integer <|> parens (delay exprP)
+and exprP () = buildExpressionParser (table ()) (delay factor)
+
+val Ok 14 = parse (delay exprP) "2 + 3 * 4"
+```
+
+`operator` covers `Infix of (... ) parser * assoc` (with
+`assoc = LeftAssoc | RightAssoc | NonAssoc`), `Prefix`, and `Postfix`, so
+right-associative operators (`Infix (powop, RightAssoc)`) and prefix unary
+operators (`Prefix negate`) drop straight into the table.
+
 ## Parsing a token stream
 
 The same combinators run over any `STREAM`. Lex your input into a token list,
@@ -207,12 +295,21 @@ val TP.Ok n =
 ## API highlights
 
 - Generic core (`PARSEC`, from `ParsecFn`): `return`, `fail`, `>>=`, `>>`, `<*`,
-  `<*>`, `<$>`, `<|>`, `<?>`, `try`, `anyItem`, `sat`, `eof`, `many`, `many1`,
-  `optional`, `sepBy`, `sepBy1`, `between`, `chainl1`, `delay`, `runParser`,
+  `<*>`, `<$>`, `<|>`, `<?>`, `try`, `anyItem`, `sat`, `eof`, `runParser`,
   `errorToString`
+- Named aliases (no fixity needed): `andThen`, `seqRight`, `seqLeft`, `ap`,
+  `map`, `orElse`, `label`
+- Combinators: `many`, `many1`, `optional`, `option`, `choice`, `count`,
+  `manyTill`, `notFollowedBy`, `skipMany`, `skipMany1`, `sepBy`, `sepBy1`,
+  `endBy`, `endBy1`, `sepEndBy`, `sepEndBy1`, `between`, `chainl1`, `chainr1`,
+  `chainl`, `chainr`, `delay`
 - Character layer (`CharParsec`): all of the above plus `anyChar`, `char`,
-  `string`, `oneOf`, `noneOf`, `digit`, `letter`, `spaces`, `token`, `integer`,
-  and a `string`-based `runParser`
+  `string`, `oneOf`, `noneOf`, `digit`, `letter`, `spaces`, `integer`, a
+  `string`-based `runParser`, and the lexer kit: `lexeme` (= `token`), `symbol`,
+  `parens`, `brackets`, `braces`, `identifier`, `keyword`, `commaSep`,
+  `commaSep1`, `semiSep`, `semiSep1`, and the full-input `parse` driver
+- Expression builder (`ExprParserFn` functor; `CharExpr` instance):
+  `buildExpressionParser`, `assoc`, `operator` (`Infix` / `Prefix` / `Postfix`)
 - Streams: `CharStream`, `ListStream` (functor)
 
 ## Project layout
@@ -225,8 +322,12 @@ lib/github.com/sjqtentacles/sml-parsec/
   parsec.sig                                    the generic PARSEC signature
   parsecfn.sml                                  ParsecFn functor (the core)
   charstream.sml                                CharStream : STREAM
+  charparseccore.sml                            ParsecFn(CharStream) as a named core
   charparsec.sig                                CHAR_PARSEC signature
-  charparsec.sml                                CharParsec (chars + runParser)
+  charparsec.sml                                CharParsec (chars + lexer kit + runParser)
+  expr.sig                                      the EXPR_PARSER signature
+  exprfn.sml                                    ExprParserFn functor (precedence tables)
+  charexpr.sml                                  CharExpr = ExprParserFn(CharParsecCore)
   tokenstream.sml                               ListStream functor
   parsec.mlb                                    MLB for consumers
 test/

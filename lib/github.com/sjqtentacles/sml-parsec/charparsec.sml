@@ -7,9 +7,10 @@
    from the functor result `P`. The character primitives (`char`, `string`,
    `digit`, `integer`, ...) are defined here in terms of `P.sat`/`P.anyItem`. *)
 
-structure CharParsec :> CHAR_PARSEC =
+structure CharParsec :> CHAR_PARSEC
+  where type 'a parser = 'a CharParsecCore.parser =
 struct
-  structure P = ParsecFn (CharStream)
+  structure P = CharParsecCore
 
   infix 1 >>= >>
   infix 1 <*
@@ -55,7 +56,9 @@ struct
 
   val spaces = many (sat Char.isSpace) >>= (fn _ => return ())
 
-  fun token p = p <* spaces
+  fun lexeme p = p <* spaces
+  (* Deprecated alias kept for backward compatibility. *)
+  fun token p = lexeme p
 
   val integer =
       let
@@ -68,4 +71,31 @@ struct
           digits >>= (fn ds =>
             return (sgn * (valOf (Int.fromString (implode ds))))))
       end
+
+  (* ---- lexer / token kit ---- *)
+
+  fun symbol s = lexeme (string s)
+
+  fun parens p = between (lexeme (char #"(")) (lexeme (char #")")) p
+  fun brackets p = between (lexeme (char #"[")) (lexeme (char #"]")) p
+  fun braces p = between (lexeme (char #"{")) (lexeme (char #"}")) p
+
+  fun identifier isFirst isRest =
+      lexeme (sat isFirst >>= (fn c =>
+              many (sat isRest) >>= (fn cs =>
+                return (implode (c :: cs)))))
+
+  (* A keyword: the literal word, not followed by an alphanumeric, plus
+     trailing whitespace. `try` makes the whole thing non-consuming on failure
+     so alternatives can recover. *)
+  fun keyword kw =
+      lexeme (try (string kw >> notFollowedBy (sat Char.isAlphaNum)))
+
+  fun commaSep1 p = sepBy1 p (lexeme (char #","))
+  fun commaSep  p = sepBy  p (lexeme (char #","))
+  fun semiSep1  p = sepBy1 p (lexeme (char #";"))
+  fun semiSep   p = sepBy  p (lexeme (char #";"))
+
+  (* Full-input parse: skip leading whitespace, run p, require end of input. *)
+  fun parse p s = runParser (spaces >> (p <* eof)) s
 end

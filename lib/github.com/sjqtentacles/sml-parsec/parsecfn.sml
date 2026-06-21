@@ -103,6 +103,15 @@ struct
              Empty (ErrR { pos = #pos e, expected = [name], msg = #msg e })
          | other => other)
 
+  (* ---- named aliases: curried, prefix forms of the operators above ---- *)
+  fun andThen p f = p >>= f
+  fun seqRight p q = p >> q
+  fun seqLeft p q = p <* q
+  fun ap pf px = pf <*> px
+  fun map f px = f <$> px
+  fun orElse p q = p <|> q
+  fun label p name = p <?> name
+
   (* ---- primitives ---- *)
 
   fun anyItem (s : state) =
@@ -141,12 +150,81 @@ struct
   fun optional p =
       (p >>= (fn x => return (SOME x))) <|> return NONE
 
+  fun option default p =
+      p <|> return default
+
+  fun choice ps =
+      List.foldr (fn (p, acc) => p <|> acc) (fail "no alternative matched") ps
+
   fun sepBy1 p sep =
       p >>= (fn x =>
         many (sep >> p) >>= (fn xs => return (x :: xs)))
 
   fun sepBy p sep =
       sepBy1 p sep <|> return []
+
+  (* count: exactly n; iterative to keep the stack flat for large n *)
+  fun count n p =
+      let
+        fun loop (i, acc) =
+            if i <= 0 then return (List.rev acc)
+            else p >>= (fn x => loop (i - 1, x :: acc))
+      in loop (n, []) end
+
+  (* manyTill: accumulate `p` until `endp` matches; iterative loop. We try
+     `endp` first at each step; if it fails without consuming we require a `p`. *)
+  fun manyTill p endp = fn s =>
+      let
+        fun step (acc, st) =
+            (case (endp st) of
+                 Empty (OkR (_, st')) => Empty (OkR (List.rev acc, st'))
+               | Consumed (OkR (_, st')) => Consumed (OkR (List.rev acc, st'))
+               | Empty (ErrR _) =>
+                   (case p st of
+                        Empty (OkR (a, st')) => step (a :: acc, st')
+                      | Consumed (OkR (a, st')) => stepC (a :: acc, st')
+                      | Empty (ErrR e) => Empty (ErrR e)
+                      | Consumed (ErrR e) => Consumed (ErrR e))
+               | Consumed (ErrR e) => Consumed (ErrR e))
+        (* once anything has been consumed, results must stay Consumed *)
+        and stepC (acc, st) =
+            (case (endp st) of
+                 Empty (OkR (_, st')) => Consumed (OkR (List.rev acc, st'))
+               | Consumed (OkR (_, st')) => Consumed (OkR (List.rev acc, st'))
+               | Empty (ErrR _) =>
+                   (case p st of
+                        Empty (OkR (a, st')) => stepC (a :: acc, st')
+                      | Consumed (OkR (a, st')) => stepC (a :: acc, st')
+                      | Empty (ErrR e) => Consumed (ErrR e)
+                      | Consumed (ErrR e) => Consumed (ErrR e))
+               | Consumed (ErrR e) => Consumed (ErrR e))
+      in step ([], s) end
+
+  (* notFollowedBy: succeeds (without consuming) iff p fails; fails (without
+     consuming) iff p succeeds. Inspect the outcome directly and always reset
+     to Empty so it never consumes input. *)
+  fun notFollowedBy p = fn s =>
+      (case p s of
+           Empty (OkR _) => Empty (ErrR (mkErr (posOf s) ["not followed by"] (SOME "unexpected input")))
+         | Consumed (OkR _) => Empty (ErrR (mkErr (posOf s) ["not followed by"] (SOME "unexpected input")))
+         | Empty (ErrR _) => Empty (OkR ((), s))
+         | Consumed (ErrR _) => Empty (OkR ((), s)))
+
+  fun skipMany p = many p >>= (fn _ => return ())
+  fun skipMany1 p = p >>= (fn _ => skipMany p)
+
+  fun endBy1 p sep = many1 (p <* sep)
+  fun endBy p sep = many (p <* sep)
+
+  (* sepEndBy: like sepBy but the trailing separator is optional. After each
+     `p`, a `sep` may follow; if it does, more items may follow (or not, if the
+     sep was trailing). *)
+  fun sepEndBy1 p sep =
+      p >>= (fn x =>
+        (sep >> (sepEndBy p sep >>= (fn xs => return (x :: xs))))
+        <|> return [x])
+  and sepEndBy p sep =
+      sepEndBy1 p sep <|> return []
 
   fun between openp closep p =
       openp >> (p <* closep)
@@ -157,6 +235,15 @@ struct
             (opp >>= (fn f => p >>= (fn y => rest (f (x, y)))))
             <|> return x
       in p >>= (fn x => rest x) end
+
+  (* chainr1: right-recursive by nature; recursion depth bounded by input. *)
+  fun chainr1 p opp =
+      p >>= (fn x =>
+        (opp >>= (fn f => chainr1 p opp >>= (fn y => return (f (x, y)))))
+        <|> return x)
+
+  fun chainl p opp default = chainl1 p opp <|> return default
+  fun chainr p opp default = chainr1 p opp <|> return default
 
   fun delay thunk = fn s => (thunk ()) s
 

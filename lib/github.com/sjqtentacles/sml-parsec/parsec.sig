@@ -59,6 +59,17 @@ sig
   val <|>    : 'a parser * 'a parser -> 'a parser  (* ordered choice        *)
   val <?>    : 'a parser * string -> 'a parser     (* label for errors      *)
 
+  (* ---- named aliases (zero-fixity ergonomics) ------------------------- *)
+  (* Curried, prefix-named synonyms for the operators above, so a whole
+     grammar can be written without declaring any `infix` fixities. *)
+  val andThen  : 'a parser -> ('a -> 'b parser) -> 'b parser  (* = >>=     *)
+  val seqRight : 'a parser -> 'b parser -> 'b parser          (* = >>      *)
+  val seqLeft  : 'a parser -> 'b parser -> 'a parser          (* = <*      *)
+  val ap       : ('a -> 'b) parser -> 'a parser -> 'b parser  (* = <*>     *)
+  val map      : ('a -> 'b) -> 'a parser -> 'b parser         (* = <$>     *)
+  val orElse   : 'a parser -> 'a parser -> 'a parser          (* = <|>     *)
+  val label    : 'a parser -> string -> 'a parser             (* = <?>     *)
+
   (* Make a parser's failure non-consuming so `<|>` can recover. *)
   val try : 'a parser -> 'a parser
 
@@ -73,13 +84,29 @@ sig
   val many     : 'a parser -> 'a list parser    (* zero or more                *)
   val many1    : 'a parser -> 'a list parser    (* one or more                 *)
   val optional : 'a parser -> 'a option parser
+  val option   : 'a -> 'a parser -> 'a parser   (* p, or a default if p fails  *)
+  val choice   : 'a parser list -> 'a parser    (* first matching alternative  *)
+  val count    : int -> 'a parser -> 'a list parser    (* exactly n times       *)
+  val manyTill : 'a parser -> 'b parser -> 'a list parser (* until end matches  *)
+  val notFollowedBy : 'a parser -> unit parser  (* succeeds iff p fails; never consumes *)
+  val skipMany : 'a parser -> unit parser       (* zero or more, discard       *)
+  val skipMany1: 'a parser -> unit parser       (* one or more, discard        *)
   val sepBy    : 'a parser -> 'b parser -> 'a list parser   (* p sep by sep    *)
   val sepBy1   : 'a parser -> 'b parser -> 'a list parser
+  val endBy    : 'a parser -> 'b parser -> 'a list parser   (* p (p sep)* sep  *)
+  val endBy1   : 'a parser -> 'b parser -> 'a list parser
+  val sepEndBy : 'a parser -> 'b parser -> 'a list parser   (* sep optional at end *)
+  val sepEndBy1: 'a parser -> 'b parser -> 'a list parser
   val between  : 'a parser -> 'b parser -> 'c parser -> 'c parser (* open close p*)
 
   (* Left-associative chaining: parse `p (op p)*` and fold the `op`s left.
      The workhorse for left-associative infix expression grammars. *)
   val chainl1  : 'a parser -> ('a * 'a -> 'a) parser -> 'a parser
+  (* Right-associative chaining: parse `p (op p)*` and fold the `op`s right. *)
+  val chainr1  : 'a parser -> ('a * 'a -> 'a) parser -> 'a parser
+  (* As chainl1/chainr1 but return the given default when `p` matches zero times. *)
+  val chainl   : 'a parser -> ('a * 'a -> 'a) parser -> 'a -> 'a parser
+  val chainr   : 'a parser -> ('a * 'a -> 'a) parser -> 'a -> 'a parser
 
   (* Defer construction of a parser until it is run. Essential for tying
      recursive grammar knots when the parser type is abstract: write
