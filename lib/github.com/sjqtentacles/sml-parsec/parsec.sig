@@ -1,11 +1,15 @@
 (* parsec.sig
 
-   Applicative/monadic parser combinators for Standard ML, with position
-   tracking and human-readable error reporting.
+   Applicative/monadic parser combinators for Standard ML, generic over an
+   input STREAM. A `'a parser` consumes a prefix of a stream and either succeeds
+   with a value of type `'a` (and a new stream position) or fails with an
+   `error` describing where and what was expected.
 
-   A `'a parser` consumes a prefix of a string and either succeeds with a value
-   of type `'a` (and a new position) or fails with an `error` describing where
-   and what was expected.
+   This signature is the result of `ParsecFn (S : STREAM)` and contains only the
+   stream-agnostic core: sequencing, choice, repetition, and the two primitives
+   `anyItem` and `sat` that read a single item via `S.uncons`. Character-level
+   helpers (`char`, `string`, `digit`, `integer`, ...) live in `CharParsec`,
+   which is built on `ParsecFn (CharStream)`.
 
    Choice (`<|>`) is *ordered* and does not backtrack once the right-hand parser
    has consumed input: `p <|> q` tries `q` only if `p` failed without consuming
@@ -19,7 +23,12 @@
 
 signature PARSEC =
 sig
-  (* A source position: 1-based line and column, plus a 0-based byte offset. *)
+  (* The input stream and its element type, fixed by the STREAM argument. *)
+  type stream
+  type item
+
+  (* A source position: 1-based line and column, plus a 0-based offset. This is
+     a concrete record shared by every stream instance (see STREAM). *)
   type pos = { line : int, col : int, off : int }
 
   (* What went wrong, and where. `expected` lists the labels/terminals the
@@ -31,9 +40,9 @@ sig
 
   datatype 'a result = Ok of 'a | Err of error
 
-  (* Run a parser over an entire string. Note this does NOT require the parser
+  (* Run a parser over an entire stream. Note this does NOT require the parser
      to consume all input; combine with `eof` if you want that guarantee. *)
-  val runParser : 'a parser -> string -> 'a result
+  val runParser : 'a parser -> stream -> 'a result
 
   (* Render an error as a one-line human-readable string. *)
   val errorToString : error -> string
@@ -55,18 +64,8 @@ sig
 
   (* ---- primitives ----------------------------------------------------- *)
 
-  val anyChar : char parser
-  val sat     : (char -> bool) -> char parser  (* a char matching a predicate *)
-  val char    : char -> char parser
-  (* Match an exact string. Atomic: on a partial match it fails WITHOUT
-     consuming input, so a surrounding `<|>` can still try alternatives
-     (no explicit `try` needed around `string`). *)
-  val string  : string -> string parser
-  val oneOf   : string -> char parser          (* any char in the set         *)
-  val noneOf  : string -> char parser          (* any char not in the set     *)
-  val digit   : char parser
-  val letter  : char parser
-  val spaces  : unit parser                     (* zero or more whitespace     *)
+  val anyItem : item parser                    (* any single item             *)
+  val sat     : (item -> bool) -> item parser  (* an item matching a predicate *)
   val eof     : unit parser                     (* succeed only at end of input *)
 
   (* ---- combinators ---------------------------------------------------- *)
@@ -82,14 +81,8 @@ sig
      The workhorse for left-associative infix expression grammars. *)
   val chainl1  : 'a parser -> ('a * 'a -> 'a) parser -> 'a parser
 
-  (* Lexeme helper: parse `p` then skip trailing whitespace. *)
-  val token    : 'a parser -> 'a parser
-
   (* Defer construction of a parser until it is run. Essential for tying
      recursive grammar knots when the parser type is abstract: write
      `fun expr () = ... delay term ...` style definitions. *)
   val delay    : (unit -> 'a parser) -> 'a parser
-
-  (* Parse a (possibly signed) integer. *)
-  val integer  : int parser
 end

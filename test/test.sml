@@ -10,7 +10,7 @@ infix 4 <*> <$>
 infixr 1 <|>
 infix 0 <?>
 
-open Parsec
+open CharParsec
 
 val passed = ref 0
 val failed = ref 0
@@ -45,6 +45,65 @@ fun makeExpr () =
     in
       spaces >> (delay expr <* eof)
     end
+
+(* ---- token-stream demo: a separate parser instance over a token list ----
+   `item` is a small datatype standing in for a lexer's output. We reuse the
+   exact same combinators (delay/chainl1/between/...) that the char parser uses,
+   proving the core is genuinely stream-agnostic. *)
+datatype tok = TNum of int | TPlus | TStar | TLParen | TRParen
+
+fun showTok t =
+    case t of
+        TNum n => Int.toString n
+      | TPlus => "+"
+      | TStar => "*"
+      | TLParen => "("
+      | TRParen => ")"
+
+structure TokStream = ListStream (type t = tok val show = showTok)
+structure TP = ParsecFn (TokStream)
+
+fun runTokenTests () =
+  let
+    local
+      infix 1 >>= >>
+      infix 1 <*
+      infix 4 <*> <$>
+      infixr 1 <|>
+      infix 0 <?>
+    in
+      open TP
+      (* a number token, extracting its int payload *)
+      val num = sat (fn TNum _ => true | _ => false)
+                >>= (fn TNum n => return n | _ => fail "number")
+      val plus = sat (fn TPlus => true | _ => false) >> return (op +)
+      val star = sat (fn TStar => true | _ => false) >> return (op * )
+      val lpar = sat (fn TLParen => true | _ => false)
+      val rpar = sat (fn TRParen => true | _ => false)
+      fun expr () = chainl1 (delay term) plus
+      and term () = chainl1 (delay factor) star
+      and factor () = num <|> between lpar rpar (delay expr)
+      val top = delay expr <* eof
+      fun runToks ts = TP.runParser top { toks = ts, idx = 0 }
+    end
+    (* 2 + 3 * 4 = 14 *)
+    val () = check "token stream: 2 + 3 * 4 = 14"
+                   (case runToks [TNum 2, TPlus, TNum 3, TStar, TNum 4] of
+                        TP.Ok n => n = 14 | TP.Err _ => false)
+    (* (2 + 3) * 4 = 20 *)
+    val () = check "token stream: (2 + 3) * 4 = 20"
+                   (case runToks [TLParen, TNum 2, TPlus, TNum 3, TRParen,
+                                  TStar, TNum 4] of
+                        TP.Ok n => n = 20 | TP.Err _ => false)
+    (* a malformed token stream fails *)
+    val () = check "token stream: rejects trailing token"
+                   (case runToks [TNum 1, TNum 2] of
+                        TP.Err _ => true | TP.Ok _ => false)
+    (* error position is reported as a token offset *)
+    val () = check "token stream: error at token offset 1"
+                   (case runToks [TNum 1, TStar, TStar] of
+                        TP.Err e => #off (#pos e) = 2 | TP.Ok _ => false)
+  in () end
 
 fun run () =
   let
@@ -144,6 +203,11 @@ fun run () =
                  ("((1))", 1), ("8/2/2", 2), ("1+2+3+4+5", 15)]
     val allOk = List.all (fn (s, v) => okEq (op =) (evalStr s, v)) cases
     val () = check "all evaluator sample cases" allOk
+
+    (* ---- token-stream payoff: same combinators over a token list ----
+       Demonstrates that the generic core works over a non-char stream. A tiny
+       lexer-output token type is parsed with a separate TokenParsec instance.  *)
+    val () = runTokenTests ()
   in
     print ("\n" ^ Int.toString (!passed) ^ " passed, "
            ^ Int.toString (!failed) ^ " failed\n");

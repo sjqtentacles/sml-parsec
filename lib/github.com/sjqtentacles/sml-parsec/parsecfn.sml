@@ -1,20 +1,25 @@
-(* parsec.sml
+(* parsecfn.sml
 
-   Implementation of the PARSEC signature.
+   Implementation of the PARSEC signature as a functor over a STREAM.
 
-   Representation. Input is the whole string plus a position record. A parser is
-   a function from state to an outcome that records, in addition to success or
-   failure, whether any input was *consumed*. The consumed flag is what gives
-   `<|>` its ordered, non-backtracking semantics:
+   Representation. The parser state is just the input `stream` (the position
+   rides inside it, retrieved via `S.pos`). A parser is a function from a stream
+   to an outcome that records, in addition to success or failure, whether any
+   input was *consumed*. The consumed flag is what gives `<|>` its ordered,
+   non-backtracking semantics:
 
      - p <|> q : if p fails WITHOUT consuming, try q; if p fails having consumed,
        propagate p's failure (commit). `try p` resets p's consumed flag on
        failure so the surrounding `<|>` can still recover.
 
-   Errors carry the furthest position reached and the set of expected tokens, so
-   messages point at the real problem rather than the start of the alternative. *)
+   Errors carry the furthest position reached (by offset) and the set of
+   expected tokens, so messages point at the real problem rather than the start
+   of the alternative. Only `anyItem`, `sat`, and `eof` read the stream; every
+   other combinator is defined in terms of them and is stream-agnostic. *)
 
-structure Parsec :> PARSEC =
+functor ParsecFn (S : STREAM) :> PARSEC
+  where type stream = S.stream
+  and   type item   = S.item =
 struct
   (* Declaring infix INSIDE the structure is required, otherwise `fun p >>= f`
      parses as application rather than an infix definition. *)
@@ -24,11 +29,15 @@ struct
   infixr 1 <|>
   infix 0 <?>
 
+  type stream = S.stream
+  type item = S.item
+
   type pos = { line : int, col : int, off : int }
   type error = { pos : pos, expected : string list, msg : string option }
   datatype 'a result = Ok of 'a | Err of error
 
-  type state = { src : string, pos : pos }
+  (* The parser state is the stream itself; position is read via S.pos. *)
+  type state = S.stream
 
   (* consumed flag, then either value+state or error *)
   datatype 'a reply = OkR of 'a * state | ErrR of error
@@ -36,7 +45,7 @@ struct
 
   type 'a parser = state -> 'a outcome
 
-  val startPos : pos = { line = 1, col = 1, off = 0 }
+  fun posOf (s : state) : pos = S.pos s
 
   fun mkErr (p : pos) (exp : string list) (m : string option) : error =
       { pos = p, expected = exp, msg = m }
@@ -52,15 +61,10 @@ struct
                 msg = case #msg e1 of SOME _ => #msg e1 | NONE => #msg e2 }
       end
 
-  (* advance a position over a single character *)
-  fun bump ({line, col, off} : pos) c =
-      if c = #"\n" then { line = line + 1, col = 1, off = off + 1 }
-      else { line = line, col = col + 1, off = off + 1 }
-
   fun return x = fn s => Empty (OkR (x, s))
 
   fun fail m = fn (s : state) =>
-      Empty (ErrR (mkErr (#pos s) [] (SOME m)))
+      Empty (ErrR (mkErr (posOf s) [] (SOME m)))
 
   fun p >>= f = fn s =>
       (case p s of
@@ -101,50 +105,18 @@ struct
 
   (* ---- primitives ---- *)
 
-  fun anyChar (s : state) =
-      let val { src, pos } = s
-          val off = #off pos
-      in if off < String.size src
-         then let val c = String.sub (src, off)
-              in Consumed (OkR (c, { src = src, pos = bump pos c })) end
-         else Empty (ErrR (mkErr pos ["any character"] NONE))
-      end
+  fun anyItem (s : state) =
+      (case S.uncons s of
+           SOME (x, s') => Consumed (OkR (x, s'))
+         | NONE => Empty (ErrR (mkErr (posOf s) ["any item"] NONE)))
 
   fun sat pred = fn (s : state) =>
-      let val { src, pos } = s
-          val off = #off pos
-      in if off < String.size src
-         then let val c = String.sub (src, off)
-              in if pred c
-                 then Consumed (OkR (c, { src = src, pos = bump pos c }))
-                 else Empty (ErrR (mkErr pos [] NONE))
-              end
-         else Empty (ErrR (mkErr pos ["more input"] NONE))
-      end
-
-  fun char c = (sat (fn x => x = c)) <?> ("'" ^ str c ^ "'")
-
-  fun oneOf set = sat (fn c => CharVector.exists (fn x => x = c) set)
-  fun noneOf set = sat (fn c => not (CharVector.exists (fn x => x = c) set))
-
-  val digit = (sat Char.isDigit) <?> "digit"
-  val letter = (sat Char.isAlpha) <?> "letter"
-
-  fun string str = fn (s : state) =>
-      let val { src, pos } = s
-          val n = String.size str
-          val off = #off pos
-      in if off + n <= String.size src
-            andalso String.substring (src, off, n) = str
-         then let
-                fun adv (i, p) = if i >= n then p
-                                 else adv (i + 1, bump p (String.sub (str, i)))
-                val pos' = adv (0, pos)
-              in if n = 0 then Empty (OkR (str, { src = src, pos = pos' }))
-                 else Consumed (OkR (str, { src = src, pos = pos' }))
-              end
-         else Empty (ErrR (mkErr pos ["\"" ^ str ^ "\""] NONE))
-      end
+      (case S.uncons s of
+           SOME (x, s') =>
+             if pred x
+             then Consumed (OkR (x, s'))
+             else Empty (ErrR (mkErr (posOf s) [] NONE))
+         | NONE => Empty (ErrR (mkErr (posOf s) ["more input"] NONE)))
 
   (* ---- many / repetition (iterative so deep inputs don't overflow) ---- *)
 
@@ -186,39 +158,21 @@ struct
             <|> return x
       in p >>= (fn x => rest x) end
 
-  val spaces = many (sat Char.isSpace) >>= (fn _ => return ())
-
-  fun token p = p <* spaces
-
   fun delay thunk = fn s => (thunk ()) s
 
   fun eof (s : state) =
-      if #off (#pos s) >= String.size (#src s)
-      then Empty (OkR ((), s))
-      else Empty (ErrR (mkErr (#pos s) ["end of input"] NONE))
-
-  val integer =
-      let
-        val sign = (char #"~" >> return ~1)
-                   <|> (char #"-" >> return ~1)
-                   <|> return 1
-        val digits = many1 digit
-      in
-        sign >>= (fn sgn =>
-          digits >>= (fn ds =>
-            return (sgn * (valOf (Int.fromString (implode ds))))))
-      end
+      (case S.uncons s of
+           NONE => Empty (OkR ((), s))
+         | SOME _ => Empty (ErrR (mkErr (posOf s) ["end of input"] NONE)))
 
   (* ---- driver ---- *)
 
-  fun runParser p src =
-      let val s0 = { src = src, pos = startPos }
-      in case p s0 of
-             Empty (OkR (a, _)) => Ok a
-           | Consumed (OkR (a, _)) => Ok a
-           | Empty (ErrR e) => Err e
-           | Consumed (ErrR e) => Err e
-      end
+  fun runParser p s0 =
+      (case p s0 of
+           Empty (OkR (a, _)) => Ok a
+         | Consumed (OkR (a, _)) => Ok a
+         | Empty (ErrR e) => Err e
+         | Consumed (ErrR e) => Err e)
 
   fun errorToString (e : error) =
       let

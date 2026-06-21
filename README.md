@@ -2,13 +2,53 @@
 
 [![CI](https://github.com/sjqtentacles/sml-parsec/actions/workflows/ci.yml/badge.svg)](https://github.com/sjqtentacles/sml-parsec/actions/workflows/ci.yml)
 
-Parser combinators for Standard ML, with position tracking and precise error
-reporting.
+Parser combinators for Standard ML, generic over the input stream, with
+position tracking and precise error reporting.
 
 `sml-parsec` is a small applicative/monadic parser-combinator library in the
 tradition of Haskell's Parsec. You build parsers compositionally from tiny
 primitives, and the library tracks source positions and accumulates an
 "expected" set so failures point at the real problem.
+
+As of **v0.3.0** the core is a functor `ParsecFn (S : STREAM)` over an abstract
+input `STREAM`, so the same combinators parse character streams, token streams
+produced by a separate lexer, or anything else you can express as `uncons`. For
+the common case of parsing strings, use the ready-made `CharParsec` structure.
+
+> **Breaking change in v0.3.0.** The old `structure Parsec` (string-only) is
+> gone. For string parsing, `open CharParsec` instead of `open Parsec` -- the
+> combinator and primitive names are unchanged, so existing grammars port by
+> changing only that one line. `runParser` still takes a `string` in
+> `CharParsec`. To parse other streams, instantiate `ParsecFn` with your own
+> `STREAM`.
+
+## The STREAM model
+
+A parser runs over a value satisfying the `STREAM` signature:
+
+```sml
+signature STREAM = sig
+  type stream
+  type item
+  type pos = { line : int, col : int, off : int }
+  val uncons   : stream -> (item * stream) option
+  val pos      : stream -> pos
+  val showItem : item -> string
+  val showPos  : pos -> string
+end
+```
+
+`ParsecFn (S : STREAM)` yields the generic `PARSEC` core (sequencing, choice,
+repetition, plus the two stream primitives `anyItem` and `sat`). `pos` is a
+single concrete record shared by all streams: `off` gives the total order used
+to report the furthest failure; `line`/`col` are for messages. The library
+ships two instances:
+
+- `CharStream : STREAM` (item = `char`) with real line/column tracking, wrapped
+  by `CharParsec` which adds `char`, `string`, `digit`, `integer`, ... and a
+  `string`-based `runParser`.
+- `ListStream` (a functor `(type t val show : t -> string)`) for parsing a list
+  of tokens; `off`/`col` are the token index.
 
 ## Semantics
 
@@ -20,8 +60,8 @@ Choice (`<|>`) is **ordered** and committed-on-consume, exactly like Parsec:
 - Wrap a parser in `try` to make its failure non-consuming, so a surrounding
   `<|>` can recover and try the alternative.
 
-`string` is atomic: a partial match fails without consuming, so you rarely need
-`try` around it.
+`CharParsec.string` is atomic: a partial match fails without consuming, so you
+rarely need `try` around it.
 
 ## Operators and infix status
 
@@ -77,17 +117,22 @@ Reference it from your own `.mlb` with a relative path to `parsec.mlb`:
 lib/github.com/sjqtentacles/sml-parsec/parsec.mlb
 ```
 
-For Poly/ML, `use` the sources in order:
+For Poly/ML, `use` the sources in dependency order:
 
 ```sml
+use "lib/github.com/sjqtentacles/sml-parsec/stream.sig";
 use "lib/github.com/sjqtentacles/sml-parsec/parsec.sig";
-use "lib/github.com/sjqtentacles/sml-parsec/parsec.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/parsecfn.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/charstream.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/charparsec.sig";
+use "lib/github.com/sjqtentacles/sml-parsec/charparsec.sml";
+use "lib/github.com/sjqtentacles/sml-parsec/tokenstream.sml";  (* optional *)
 ```
 
 ## Usage
 
 A whitespace-tolerant arithmetic evaluator with correct precedence and
-left-associativity, in a few lines:
+left-associativity, in a few lines (note `open CharParsec`):
 
 ```sml
 infix 1 >>= >>
@@ -95,7 +140,7 @@ infix 1 <*
 infix 4 <*> <$>
 infixr 1 <|>
 infix 0 <?>
-open Parsec
+open CharParsec
 
 fun calc () =
   let
@@ -125,14 +170,50 @@ case runParser (calc ()) "1 + * 2" of
 (* parse error at line 1, column 5: ... *)
 ```
 
+## Parsing a token stream
+
+The same combinators run over any `STREAM`. Lex your input into a token list,
+then instantiate `ParsecFn` with `ListStream`:
+
+```sml
+infix 1 >>= >>
+infix 1 <*
+infixr 1 <|>
+
+datatype tok = TNum of int | TPlus | TStar | TLParen | TRParen
+fun showTok (TNum n) = Int.toString n
+  | showTok TPlus = "+" | showTok TStar = "*"
+  | showTok TLParen = "(" | showTok TRParen = ")"
+
+structure TokStream = ListStream (type t = tok val show = showTok)
+structure TP = ParsecFn (TokStream)
+local open TP in
+  val num  = sat (fn TNum _ => true | _ => false)
+             >>= (fn TNum n => return n | _ => fail "number")
+  val plus = sat (fn TPlus => true | _ => false) >> return (op +)
+  val star = sat (fn TStar => true | _ => false) >> return (op * )
+  val lpar = sat (fn TLParen => true | _ => false)
+  val rpar = sat (fn TRParen => true | _ => false)
+  fun expr () = chainl1 (delay term) plus
+  and term () = chainl1 (delay factor) star
+  and factor () = num <|> between lpar rpar (delay expr)
+end
+
+(* 2 + 3 * 4 = 14 *)
+val TP.Ok n =
+  TP.runParser (TP.delay expr) { toks = [TNum 2, TPlus, TNum 3, TStar, TNum 4], idx = 0 }
+```
+
 ## API highlights
 
-- Core: `return`, `fail`, `>>=`, `>>`, `<*`, `<*>`, `<$>`, `<|>`, `<?>`, `try`
-- Primitives: `anyChar`, `sat`, `char`, `string`, `oneOf`, `noneOf`, `digit`,
-  `letter`, `spaces`, `eof`, `integer`
-- Combinators: `many`, `many1`, `optional`, `sepBy`, `sepBy1`, `between`,
-  `chainl1`, `token`, `delay`
-- Driver: `runParser`, `errorToString`
+- Generic core (`PARSEC`, from `ParsecFn`): `return`, `fail`, `>>=`, `>>`, `<*`,
+  `<*>`, `<$>`, `<|>`, `<?>`, `try`, `anyItem`, `sat`, `eof`, `many`, `many1`,
+  `optional`, `sepBy`, `sepBy1`, `between`, `chainl1`, `delay`, `runParser`,
+  `errorToString`
+- Character layer (`CharParsec`): all of the above plus `anyChar`, `char`,
+  `string`, `oneOf`, `noneOf`, `digit`, `letter`, `spaces`, `token`, `integer`,
+  and a `string`-based `runParser`
+- Streams: `CharStream`, `ListStream` (functor)
 
 ## Project layout
 
@@ -140,8 +221,13 @@ case runParser (calc ()) "1 + * 2" of
 sml.pkg                                         smlpkg manifest
 Makefile                                        build + test
 lib/github.com/sjqtentacles/sml-parsec/
-  parsec.sig                                    the PARSEC signature
-  parsec.sml                                    the implementation
+  stream.sig                                    the STREAM signature
+  parsec.sig                                    the generic PARSEC signature
+  parsecfn.sml                                  ParsecFn functor (the core)
+  charstream.sml                                CharStream : STREAM
+  charparsec.sig                                CHAR_PARSEC signature
+  charparsec.sml                                CharParsec (chars + runParser)
+  tokenstream.sml                               ListStream functor
   parsec.mlb                                    MLB for consumers
 test/
   test.mlb                                      test basis (MLton)
