@@ -7,11 +7,10 @@
 #   make clean      remove build artifacts
 
 MLTON      ?= mlton
-POLY       ?= poly
 BIN        := bin
 LIBDIR     := lib/github.com/sjqtentacles/sml-parsec
-TEST_MLB   := test/test.mlb
-SRCS       := $(wildcard $(LIBDIR)/*.sml $(LIBDIR)/*.sig $(LIBDIR)/*.mlb) test/test.sml $(TEST_MLB)
+TEST_MLB   := test/sources.mlb
+SRCS       := $(wildcard $(LIBDIR)/*.sml $(LIBDIR)/*.sig $(LIBDIR)/*.mlb) $(wildcard test/*.sml) $(TEST_MLB)
 
 .PHONY: all test poly test-poly all-tests clean
 
@@ -23,11 +22,15 @@ $(BIN)/test-mlton: $(SRCS) | $(BIN)
 test: $(BIN)/test-mlton
 	$(BIN)/test-mlton
 
-# Poly/ML has no native .mlb support; the test suite runs at top level and
-# exits on its own, so we just `use` the sources in order. No executable is
-# exported, which sidesteps any linker quirks.
-poly test-poly:
-	printf 'use "$(LIBDIR)/stream.sig";\nuse "$(LIBDIR)/parsec.sig";\nuse "$(LIBDIR)/parsecfn.sml";\nuse "$(LIBDIR)/charstream.sml";\nuse "$(LIBDIR)/charparseccore.sml";\nuse "$(LIBDIR)/charparsec.sig";\nuse "$(LIBDIR)/charparsec.sml";\nuse "$(LIBDIR)/expr.sig";\nuse "$(LIBDIR)/exprfn.sml";\nuse "$(LIBDIR)/charexpr.sml";\nuse "$(LIBDIR)/tokenstream.sml";\nuse "test/test.sml";\n' | $(POLY) -q --error-exit
+poly: $(BIN)/test-poly
+
+# Poly/ML has no native .mlb support; tools/polybuild expands the .mlb in
+# dependency order, `use`s each source, and exports `main`.
+$(BIN)/test-poly: $(SRCS) tools/polybuild | $(BIN)
+	sh tools/polybuild -o $@ $(TEST_MLB)
+
+test-poly: $(BIN)/test-poly
+	$(BIN)/test-poly
 
 all-tests: test test-poly
 

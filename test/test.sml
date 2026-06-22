@@ -1,5 +1,8 @@
-(* Dependency-free test runner for the Parsec structure.
- * Prints one line per assertion and exits non-zero if any assertion fails. *)
+(* Tests for sml-parsec, standardized on the shared sml-test Harness. *)
+
+structure Tests =
+struct
+  open Harness
 
 (* Consumers must declare infix status for the operator-named values before
  * using them in infix position. These must match the fixities the library
@@ -11,14 +14,6 @@ infixr 1 <|>
 infix 0 <?>
 
 open CharParsec
-
-val passed = ref 0
-val failed = ref 0
-
-fun check (name : string) (cond : bool) : unit =
-    if cond
-    then (passed := !passed + 1; print ("ok   - " ^ name ^ "\n"))
-    else (failed := !failed + 1; print ("FAIL - " ^ name ^ "\n"))
 
 fun okEq eq (r, expected) =
     case r of Ok v => eq (v, expected) | Err _ => false
@@ -462,9 +457,6 @@ fun run () =
     val () = runLexerTests ()
     val () = runExprTests ()
   in
-    print ("\n" ^ Int.toString (!passed) ^ " passed, "
-           ^ Int.toString (!failed) ^ " failed\n");
-    OS.Process.exit (if !failed = 0 then OS.Process.success else OS.Process.failure)
+    Harness.run ()
   end
-
-val () = run ()
+end
